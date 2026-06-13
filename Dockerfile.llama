@@ -1,0 +1,134 @@
+FROM debian:trixie-slim AS debian-dev-root
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# ---------------- System dependencies -------------- #
+RUN apt-get update && apt-get install -y              \
+        build-essential                               \
+        ca-certificates                               \
+        clang                                         \
+        cmake                                         \
+        curl                                          \
+        fontconfig                                    \
+        g++                                           \
+        gcc                                           \
+        git                                           \
+        jq                                            \
+        libssl-dev                                    \
+        locales                                       \
+        make                                          \
+        neovim                                        \
+        openssh-client                                \
+        pkg-config                                    \
+        python3                                       \
+        python3-pip                                   \
+        pipx                                          \
+        ripgrep                                       \
+        sqlite3                                       \
+        tmux                                          \
+        tree                                          \
+        universal-ctags                               \
+        unzip                                         \
+        vim                                           \
+        wget                                          \
+        zip                                           \
+    && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+    && locale-gen                                     \
+    && update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
+    && mkdir -p /usr/share/fonts/truetype/nerdfonts \
+    && curl -Lo /tmp/FiraCode.zip https://github.com/ryanoasis/nerd-fonts/releases/download/v3.2.1/FiraCode.zip \
+    && unzip -o /tmp/FiraCode.zip -d /usr/share/fonts/truetype/nerdfonts \
+    && fc-cache -fv \
+    && rm /tmp/FiraCode.zip
+
+FROM debian-dev-root AS debian-dev-user
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# ---------- Create non-root dev user ----------
+RUN useradd -ms /bin/bash dev
+
+# ---------- Ensure permissions ----------
+RUN chown -R dev:dev /home/dev
+
+USER dev
+WORKDIR /home/dev
+
+# ---------- Install Rust/Julia tools ----------
+ARG JULIA_VERSION=1.12
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+ENV HOME=/home/dev
+ENV CARGO_HOME="$HOME/.cargo" 
+ENV PATH="$CARGO_HOME/bin:$PATH" 
+RUN rustup component add rust-analyzer
+
+RUN cargo install rusty-tags cargo-edit cargo-watch juliaup
+# RUN juliaup add ${JULIA_VERSION}
+# RUN echo 'exit()' > juliatest.jl && julia juliatest.jl && rm juliatest.jl
+RUN mkdir -p opt \
+    && curl -LO https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz \
+    && rm -rf opt/nvim-linux-x86_64 \
+    && tar -C opt -xzf nvim-linux-x86_64.tar.gz \
+    && echo 'PATH="$PATH:$HOME/opt/nvim-linux-x86_64/bin"' >> .bashrc \
+    && echo 'export PATH' >> .bashrc
+RUN ${HOME}/opt/nvim-linux-x86_64/bin/nvim --headless +TSUpdate +qall
+RUN echo $PATH && ls -l "$HOME/.cargo/bin"
+
+# llama.cpp
+RUN cd opt && \
+    git clone https://github.com/ggml-org/llama.cpp.git && \
+    cd llama.cpp && \
+    cmake -B build && \
+    cmake --build build -j$(nproc) && \
+    ./build/bin/llama-cli --help
+
+# hf (required by download-models.bash)
+ENV PATH="/home/dev/.local/bin:${PATH}"
+RUN pipx install huggingface_hub[cli]
+
+RUN mkdir -p ~/models && \
+    echo 'export PATH="$PATH:$HOME/scripts:$HOME/opt/llama.cpp/build/bin"' >> ~/.bashrc
+
+#
+# Workspace
+#
+RUN mkdir -p \
+    "$HOME/repos" \
+    "$HOME/scripts" \
+    "$HOME/prompts" \
+    "$HOME/work" \
+    "$HOME/logs"
+
+# ---------- Default Neovim config (fallback) ----------
+COPY --chmod=755 default-init.lua ./
+COPY --chmod=755 default-motd.bash ./.motd
+COPY --chmod=755 default-versions.bash ./.versions
+COPY --chmod=755 bootstrap-repo.bash ./scripts/bootstrap-repo.bash
+COPY --chmod=755 download-models.bash ./scripts/download-models.bash
+COPY --chmod=755 ask-code.bash ./scripts/ask-code.bash
+COPY --chmod=755 ask-llm.bash ./scripts/ask-llm.bash
+COPY --chmod=755 context.bash ./scripts/context.sh
+
+
+# ---------- Entry point script ----------
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "bash ./.motd" >> .bashrc \n\
+echo "bash ./.versions" >> .bashrc \n\
+if [ -f /home/dev/project/init.lua ]; then\n\
+  echo "🔧 Using local init.lua from project directory."\n\
+  mkdir -p ~/.config/nvim\n\
+  cp /home/dev/project/init.lua ~/.config/nvim/init.lua\n\
+  rm default-init.lua\n\
+else\n\
+  echo "⚙️  Using default Neovim config baked into the image."\n\
+  mkdir -p ~/.config/nvim\n\
+  mv default-init.lua ~/.config/nvim/init.lua\n\
+fi\n\
+exec "$@"' > /home/dev/entrypoint.sh && chmod +x /home/dev/entrypoint.sh
+
+ENTRYPOINT ["/home/dev/entrypoint.sh"]
+CMD ["/bin/bash"]

@@ -1,0 +1,12 @@
+{
+  "name": "Dev (Rust)",
+  "build": {
+    "dockerfile": "../../Dockerfile.rust",
+    "context": "../.."
+  },
+  "remoteUser": "dev",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/dev/repos/${localWorkspaceFolderBasename},type=bind",
+  "workspaceFolder": "/home/dev/repos/${localWorkspaceFolderBasename}",
+  // Podman: --userns=keep-id keeps host file ownership. Remove this line when using Docker.
+  "runArgs": ["--userns=keep-id"]
+}

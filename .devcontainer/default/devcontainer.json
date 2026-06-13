@@ -1,0 +1,17 @@
+{
+  "name": "Dev (default — Rust + Julia + Neovim)",
+  "build": {
+    "dockerfile": "../../Dockerfile",
+    "context": "../..",
+    // Override the default username so it matches all other images.
+    "args": {
+      "USERNAME": "dev"
+    }
+  },
+  "remoteUser": "dev",
+  // Mount the opened workspace into the same path the run scripts use.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/dev/repos/${localWorkspaceFolderBasename},type=bind",
+  "workspaceFolder": "/home/dev/repos/${localWorkspaceFolderBasename}",
+  // Podman: --userns=keep-id keeps host file ownership. Remove this line when using Docker.
+  "runArgs": ["--userns=keep-id"]
+}
