@@ -1,4 +1,4 @@
-FROM debian:trixie-slim AS debian-dev-root
+FROM --platform=linux/amd64 debian:trixie-slim AS debian-dev-root
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
@@ -14,12 +14,15 @@ RUN apt-get update && apt-get install -y              \
         g++                                           \
         gcc                                           \
         git                                           \
+        gnupg                                         \
         jq                                            \
         libssl-dev                                    \
         locales                                       \
         make                                          \
-        neovim                                        \
+        nodejs                                        \
+        npm                                           \
         openssh-client                                \
+        pciutils                                      \
         pkg-config                                    \
         python3                                       \
         python3-pip                                   \
@@ -31,6 +34,12 @@ RUN apt-get update && apt-get install -y              \
         universal-ctags                               \
         unzip                                         \
         vim                                           \
+        vulkan-tools                                  \
+        libvulkan-dev                                 \
+        mesa-vulkan-drivers                           \
+        glslang-tools                                 \
+        libshaderc-dev                                \
+        glslc                                         \
         wget                                          \
         zip                                           \
     && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
@@ -42,13 +51,57 @@ RUN apt-get update && apt-get install -y              \
     && fc-cache -fv \
     && rm /tmp/FiraCode.zip
 
+# ---------------- GPU toolkits -------------- #
+# llama.cpp is built with every backend as a loadable module (GGML_BACKEND_DL), so one
+# llama-server drives NVIDIA (CUDA), AMD (ROCm) and anything with Vulkan. Backends whose
+# devices are not passed into the container are skipped at runtime. Turn a toolkit
+# off with --build-arg LLAMA_CUDA=OFF / LLAMA_HIP=OFF to save several GB and build time.
+ARG LLAMA_CUDA=ON
+ARG LLAMA_HIP=ON
+ARG CUDA_VERSION=13-4
+ARG ROCM_VERSION=7.2.4
+
+# CUDA: compiler, runtime and cuBLAS only. libcuda itself comes from the host driver
+# via the NVIDIA container toolkit; the stub from cuda-driver-dev is for linking.
+RUN if [ "$LLAMA_CUDA" = ON ]; then \
+        curl -fsSLo /tmp/cuda-keyring.deb \
+            https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_1.1-1_all.deb \
+        && dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb \
+        && apt-get update && apt-get install -y --no-install-recommends \
+            cuda-nvcc-${CUDA_VERSION} \
+            cuda-cudart-dev-${CUDA_VERSION} \
+            cuda-driver-dev-${CUDA_VERSION} \
+            cuda-cccl-${CUDA_VERSION} \
+            libcublas-dev-${CUDA_VERSION} \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ROCm: AMD's documented Debian 13 setup uses the Ubuntu noble repos.
+RUN if [ "$LLAMA_HIP" = ON ]; then \
+        mkdir -p /etc/apt/keyrings \
+        && curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg \
+        && printf '%s\n' \
+            "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} noble main" \
+            "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/graphics/${ROCM_VERSION}/ubuntu noble main" \
+            > /etc/apt/sources.list.d/rocm.list \
+        && printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' > /etc/apt/preferences.d/rocm-pin-600 \
+        && apt-get update && apt-get install -y --no-install-recommends \
+            rocm-hip-runtime-dev \
+            hipcc \
+            hipblas-dev \
+            rocblas-dev \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+ENV PATH="/usr/local/cuda/bin:/opt/rocm/bin:${PATH}"
+
 FROM debian-dev-root AS debian-dev-user
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
 # ---------- Create non-root dev user ----------
-RUN useradd -ms /bin/bash dev
+# render/video let dev open /dev/dri and /dev/kfd when they are passed through.
+RUN groupadd -f render && useradd -ms /bin/bash -G render,video dev
 
 # ---------- Ensure permissions ----------
 RUN chown -R dev:dev /home/dev
@@ -61,36 +114,68 @@ ARG JULIA_VERSION=1.12
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 ENV HOME=/home/dev
-ENV CARGO_HOME="$HOME/.cargo" 
-ENV PATH="$CARGO_HOME/bin:$PATH" 
+ENV CARGO_HOME="$HOME/.cargo"
+ENV PATH="$CARGO_HOME/bin:$PATH"
 RUN rustup component add rust-analyzer
 
 RUN cargo install rusty-tags cargo-edit cargo-watch juliaup
 # RUN juliaup add ${JULIA_VERSION}
 # RUN echo 'exit()' > juliatest.jl && julia juliatest.jl && rm juliatest.jl
+ARG NVIM_VERSION=0.12.5
 RUN mkdir -p opt \
-    && curl -LO https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz \
+    && curl -LO https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim-linux-x86_64.tar.gz \
     && rm -rf opt/nvim-linux-x86_64 \
     && tar -C opt -xzf nvim-linux-x86_64.tar.gz \
     && echo 'PATH="$PATH:$HOME/opt/nvim-linux-x86_64/bin"' >> .bashrc \
     && echo 'export PATH' >> .bashrc
-RUN ${HOME}/opt/nvim-linux-x86_64/bin/nvim --headless +TSUpdate +qall
 RUN echo $PATH && ls -l "$HOME/.cargo/bin"
 
-# llama.cpp
-RUN cd opt && \
-    git clone https://github.com/ggml-org/llama.cpp.git && \
-    cd llama.cpp && \
-    cmake -B build && \
-    cmake --build build -j$(nproc) && \
-    ./build/bin/llama-cli --help
+# ---------- llama.cpp (all backends as runtime-loaded modules) ----------
+ARG LLAMA_REF=v0.7.0
+ARG LLAMA_VULKAN=ON
+ARG LLAMA_CUDA=ON
+ARG LLAMA_HIP=ON
+# CUDA 13 supports Turing (sm_75) and newer.
+ARG CUDA_ARCHS="75;80;86;89;90;120"
+ARG HIP_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1200;gfx1201;gfx90a;gfx942"
+# nvcc/hipcc jobs are memory hungry; lower this if the build gets OOM-killed.
+ARG BUILD_JOBS=8
+# Backend modules are dlopen()ed, not linked, so build everything rather than one target.
+RUN cd opt \
+    && git clone --depth 1 --branch ${LLAMA_REF} https://github.com/ggml-org/llama.cpp.git \
+    && cd llama.cpp \
+    && args="-DCMAKE_BUILD_TYPE=Release -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_NATIVE=OFF" \
+    && args="$args -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF" \
+    && args="$args -DGGML_VULKAN=${LLAMA_VULKAN}" \
+    && if [ "$LLAMA_CUDA" = ON ]; then \
+           args="$args -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"; \
+       fi \
+    && if [ "$LLAMA_HIP" = ON ]; then \
+           export HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+           && args="$args -DGGML_HIP=ON -DGPU_TARGETS=${HIP_TARGETS}"; \
+       fi \
+    && cmake -B build $args \
+    && cmake --build build -j${BUILD_JOBS} \
+    && ls build/bin/libggml-*.so \
+    && ./build/bin/llama-server --list-devices
 
 # hf (required by download-models.bash)
 ENV PATH="/home/dev/.local/bin:${PATH}"
 RUN pipx install huggingface_hub[cli]
 
+# ---------- Agent CLIs ----------
+# Claude Code (native installer) + the ACP bridge codecompanion uses for it, and
+# opencode, which is preconfigured to use the local llama-server.
+RUN npm config set prefix "$HOME/.local" \
+    && npm install -g @agentclientprotocol/claude-agent-acp opencode-ai \
+    && curl -fsSL https://claude.ai/install.sh | bash \
+    && claude --version && opencode --version
+COPY --chown=dev:dev opencode.json /home/dev/.config/opencode/opencode.json
+
 RUN mkdir -p ~/models && \
     echo 'export PATH="$PATH:$HOME/scripts:$HOME/opt/llama.cpp/build/bin"' >> ~/.bashrc
+# Also for non-interactive shells (devcontainer postStartCommand, Neovim jobs).
+ENV PATH="/home/dev/scripts:/home/dev/opt/llama.cpp/build/bin:${PATH}"
 
 #
 # Workspace
@@ -102,8 +187,11 @@ RUN mkdir -p \
     "$HOME/work" \
     "$HOME/logs"
 
-# ---------- Default Neovim config (fallback) ----------
-COPY --chmod=755 default-init.lua ./
+# ---------- Default Neovim config (LazyVim) ----------
+ENV NVIM_LANGS="clangd,cmake,python,rust,llm"
+ENV NVIM_CONTAINER=1
+ENV LLM_PORT=9090
+COPY --chown=dev:dev nvim-config /home/dev/default-nvim-config
 COPY --chmod=755 default-motd.bash ./.motd
 COPY --chmod=755 default-versions.bash ./.versions
 COPY --chmod=755 bootstrap-repo.bash ./scripts/bootstrap-repo.bash
@@ -111,24 +199,23 @@ COPY --chmod=755 download-models.bash ./scripts/download-models.bash
 COPY --chmod=755 ask-code.bash ./scripts/ask-code.bash
 COPY --chmod=755 ask-llm.bash ./scripts/ask-llm.bash
 COPY --chmod=755 context.bash ./scripts/context.sh
+COPY --chmod=755 llm-detect.bash llm-start.bash llm-stop.bash llm-status.bash ./scripts/
 
+# ---------- Pre-warm plugins and language tooling at build time ----------
+# Lazy! restore checks out the exact commits in lazy-lock.json (synced from the host).
+ENV PATH="$HOME/opt/nvim-linux-x86_64/bin:$PATH"
+RUN mkdir -p $HOME/.config && cp -a $HOME/default-nvim-config $HOME/.config/nvim \
+    && nvim --headless "+Lazy! restore" +qa 2>&1 | tail -5 \
+    && nvim --headless -c "MasonInstall codelldb neocmakelsp cmakelang cmakelint debugpy basedpyright ruff" \
+         -c "lua vim.wait(900000, function() local r=require('mason-registry') for _,n in ipairs(vim.split('codelldb neocmakelsp cmakelang cmakelint debugpy basedpyright ruff',' ')) do local ok,p=pcall(r.get_package,n) if ok and not p:is_installed() then return false end end return true end, 3000)" \
+         -c "qa!" 2>&1 | tail -5 \
+    && rm -rf $HOME/.config/nvim
 
 # ---------- Entry point script ----------
-RUN echo '#!/bin/bash\n\
-set -e\n\
-echo "bash ./.motd" >> .bashrc \n\
-echo "bash ./.versions" >> .bashrc \n\
-if [ -f /home/dev/project/init.lua ]; then\n\
-  echo "🔧 Using local init.lua from project directory."\n\
-  mkdir -p ~/.config/nvim\n\
-  cp /home/dev/project/init.lua ~/.config/nvim/init.lua\n\
-  rm default-init.lua\n\
-else\n\
-  echo "⚙️  Using default Neovim config baked into the image."\n\
-  mkdir -p ~/.config/nvim\n\
-  mv default-init.lua ~/.config/nvim/init.lua\n\
-fi\n\
-exec "$@"' > /home/dev/entrypoint.sh && chmod +x /home/dev/entrypoint.sh
+# Copies the Neovim config, then detects the GPU and starts llama-server in the
+# background (LLM_AUTOSTART=0 to skip).
+COPY --chmod=755 llama-entrypoint.bash /home/dev/entrypoint.sh
 
+EXPOSE 9090
 ENTRYPOINT ["/home/dev/entrypoint.sh"]
 CMD ["/bin/bash"]

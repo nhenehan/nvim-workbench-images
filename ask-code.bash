@@ -21,4 +21,4 @@ Answer using only repository information when possible.
 EOF
 )
 
-~/scripts/ask-llm "$PROMPT"
+~/scripts/ask-llm.bash "$PROMPT"

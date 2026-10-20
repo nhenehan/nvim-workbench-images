@@ -41,6 +41,17 @@ if [ -t 1 ]; then
         echo "🖥️ Neovim: not installed"
     fi
 
+    # Local LLM / agents (llama image only)
+    if [ -x "$HOME/opt/llama.cpp/build/bin/llama-server" ]; then
+        if curl -fsS "http://127.0.0.1:${LLM_PORT:-9090}/health" >/dev/null 2>&1; then
+            echo "🦙 llama-server: up on :${LLM_PORT:-9090} ($(curl -fsS "http://127.0.0.1:${LLM_PORT:-9090}/props" 2>/dev/null | jq -r '.model_path // "?"' | xargs -r basename))"
+        else
+            echo "🦙 llama-server: not running (llm-start.bash --background)"
+        fi
+    fi
+    command -v claude >/dev/null 2>&1 && echo "🤖 Claude Code: $(claude --version 2>/dev/null | head -n1)"
+    command -v opencode >/dev/null 2>&1 && echo "🤖 opencode: $(opencode --version 2>/dev/null | head -n1)"
+
     echo "===================="
 fi
 

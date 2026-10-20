@@ -3,6 +3,7 @@
   "build": {
     "dockerfile": "../../Dockerfile.llama",
     "context": "../.."
+    // Smaller/faster image: "args": { "LLAMA_CUDA": "OFF", "LLAMA_HIP": "OFF" }
   },
   "remoteUser": "dev",
   "workspaceMount": "source=${localWorkspaceFolder},target=/home/dev/repos/${localWorkspaceFolderBasename},type=bind",
@@ -13,6 +14,18 @@
   ],
   // Expose port 9090 for llama-server.
   "forwardPorts": [9090],
-  // Podman: --userns=keep-id keeps host file ownership. Remove this line when using Docker.
-  "runArgs": ["--userns=keep-id"]
+  // Dev Containers bypass the image ENTRYPOINT, so start the server from here instead.
+  "containerEnv": { "LLM_AUTOSTART": "0" },
+  "postStartCommand": "llm-start.bash --background",
+  // GPU passthrough. /dev/dri covers Vulkan (AMD/Intel/NVIDIA). ROCm needs
+  // "--device=/dev/kfd" too; it is left out on purpose because a ROCm fault on an APU
+  // hangs the display -- add it only on a discrete AMD GPU. NVIDIA (CUDA) needs the NVIDIA
+  // container toolkit: podman "--device=nvidia.com/gpu=all", docker "--gpus=all".
+  // Podman: --userns=keep-id keeps host file ownership and --group-add=keep-groups
+  // keeps render/video access. Remove both when using Docker.
+  "runArgs": [
+    "--userns=keep-id",
+    "--group-add=keep-groups",
+    "--device=/dev/dri"
+  ]
 }

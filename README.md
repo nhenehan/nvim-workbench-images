@@ -32,6 +32,19 @@ make shell
 
 The Makefile auto-selects `podman` when it is available and falls back to `docker`. If you want to force one engine, override `ENGINE`, for example `make ENGINE=docker compose`.
 
+### Keeping Neovim in step with the host
+
+The images track your host Neovim:
+
+```bash
+make sync-nvim    # copy ~/.config/nvim (incl. lazy-lock.json) into nvim-config/
+make compose      # rebuild; NVIM_VERSION is read from the host's `nvim --version`
+```
+
+At build time each image runs `Lazy! restore`, so it gets the exact plugin commits pinned in the host's `lazy-lock.json`. `NVIM_LANGS` (set per Dockerfile) decides which language extras load, so the C++ image doesn't carry Java tooling. With `NVIM_LANGS` unset, as on the host, everything loads. `NVIM_CONTAINER=1` turns off the update checker inside the images. Override the version or source with `make NVIM_VERSION=0.12.5 HOST_NVIM_CONFIG=/path/to/nvim compose`.
+
+`make llama-shell` runs the llama image with every GPU the host has passed through. See [README.LLAMA.md](README.LLAMA.md).
+
 ## Devcontainer usage
 
 Each Dockerfile has a matching configuration under `.devcontainer/`:

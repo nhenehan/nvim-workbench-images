@@ -1,0 +1,12 @@
+-- Modelica: deliberately minimal.
+--
+-- There is no `modelica` parser in the nvim-treesitter registry, no OpenModelica
+-- (omc) or Dymola on this machine, and no .mo files. OpenModelica's
+-- modelica-language-server exists but is self-described as very early (outline,
+-- goto-declaration and hover only) and needs node 20+.
+--
+-- Filetype detection lives in lua/config/autocmds.lua. When there is actual Modelica
+-- code to work against, the path forward is:
+--   npm i -g @openmodelica/modelica-language-server
+--   then add a vim.lsp.config("modelica_ls", ...) spec here.
+return {}
